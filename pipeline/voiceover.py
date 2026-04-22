@@ -119,13 +119,17 @@ class VoiceoverStep(PipelineStep):
         if not seg_files:
             return StepResult(status=Status.ERROR, message="無成功合成的音段")
 
-        concat_wav = ws / "sovits_concat.wav"
-        self.log("拼接音段...")
-        concat_audio_files(seg_files, concat_wav)
+        try:
+            concat_wav = ws / "sovits_concat.wav"
+            self.log("拼接音段...")
+            concat_audio_files(seg_files, concat_wav)
 
-        # Convert to MP3
-        convert_to_mp3(concat_wav, audio_out)
-        self.log(f"GPT-SoVITS 輸出：{audio_out.name}")
+            # Convert to MP3
+            convert_to_mp3(concat_wav, audio_out)
+            self.log(f"GPT-SoVITS 輸出：{audio_out.name}")
+        except Exception as e:
+            return StepResult(status=Status.ERROR,
+                              message=f"音段拼接/轉檔失敗：{e}")
 
         ctx["voiceover"] = audio_out
         # No WordBoundary for GPT-SoVITS, subtitle step will use ASR or text fallback

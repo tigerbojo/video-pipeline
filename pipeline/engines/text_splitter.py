@@ -4,8 +4,10 @@ import re
 
 
 def split_text(text: str, max_length: int = 300) -> list[str]:
-    """Split text into chunks that fit within TTS model limits."""
-    sentences = re.split(r'(?<=[。！？.!?\n])', text)
+    """Split text into chunks that fit within TTS model limits.
+    Handles Chinese punctuation including pause marks."""
+    # Split on all Chinese/English sentence and clause boundaries
+    sentences = re.split(r'(?<=[。！？.!?\n；;，,])', text)
     sentences = [s.strip() for s in sentences if s.strip()]
 
     segments: list[str] = []
@@ -21,4 +23,15 @@ def split_text(text: str, max_length: int = 300) -> list[str]:
     if current:
         segments.append(current)
 
-    return segments if segments else [text]
+    # Hard-split any remaining oversized segments
+    final = []
+    for seg in segments:
+        if len(seg) <= max_length:
+            final.append(seg)
+        else:
+            for i in range(0, len(seg), max_length):
+                chunk = seg[i:i + max_length]
+                if chunk.strip():
+                    final.append(chunk)
+
+    return final if final else [text]
