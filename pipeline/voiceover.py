@@ -33,9 +33,23 @@ class VoiceoverStep(PipelineStep):
             ctx["voiceover"] = None
             return StepResult(status=Status.SKIPPED, message="無旁白文字")
 
+        # Validate voice sample path
+        if ref_audio:
+            ref_path = Path(ref_audio) if isinstance(ref_audio, str) else None
+            if ref_path and ref_path.exists() and ref_path.stat().st_size > 1000:
+                self.log(f"聲音樣本：{ref_path.name} ({ref_path.stat().st_size // 1024} KB)")
+            else:
+                self.log(f"聲音樣本無效或太小，改用 edge-tts")
+                ref_audio = None
+
         # GPT-SoVITS voice clone
-        if engine == "gpt-sovits" and ref_audio:
-            return self._run_gpt_sovits(text, ref_audio, sovits_url, out, srt_out, ctx)
+        if engine == "gpt-sovits":
+            if not ref_audio:
+                self.log("未提供聲音樣本，GPT-SoVITS 需要聲音樣本才能複製")
+                self.log("改用 edge-tts 備援")
+                engine = "edge-tts"
+            else:
+                return self._run_gpt_sovits(text, str(ref_audio), sovits_url, out, srt_out, ctx)
 
         # Default: edge-tts
         self.log(f"使用 edge-tts，語音角色：{voice}")
@@ -58,6 +72,10 @@ class VoiceoverStep(PipelineStep):
         from .engines.gpt_sovits import synthesize, health_check
         from .engines.text_splitter import split_text
         from .engines.audio_utils import concat_audio_files, convert_to_mp3
+
+        # Resolve to absolute path (GPT-SoVITS needs absolute path)
+        ref_audio = str(Path(ref_audio).resolve())
+        self.log(f"聲音樣本路徑：{ref_audio}")
 
         # Check server
         self.log(f"檢查 GPT-SoVITS 伺服器（{base_url}）...")

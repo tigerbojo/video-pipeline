@@ -54,10 +54,13 @@ def synthesize(
 
 
 def health_check(base_url: str = DEFAULT_URL) -> bool:
-    """Check if GPT-SoVITS API is reachable."""
+    """Check if GPT-SoVITS API is reachable via TCP connect."""
+    import socket
     try:
-        req = urllib.request.Request(f"{base_url.rstrip('/')}/")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.status == 200
+        url = base_url.rstrip("/").replace("http://", "").replace("https://", "")
+        host, port = url.split(":")
+        sock = socket.create_connection((host, int(port)), timeout=3)
+        sock.close()
+        return True
     except Exception:
         return False
