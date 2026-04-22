@@ -91,7 +91,8 @@ def cmd_exists(name: str) -> bool:
 def run_cmd(args: list[str], cwd: str | None = None, timeout: int = 600) -> str:
     """執行 shell 指令並回傳標準輸出。"""
     result = subprocess.run(
-        args, capture_output=True, text=True, cwd=cwd, timeout=timeout
+        args, capture_output=True, text=True,
+        cwd=cwd, timeout=timeout, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"指令執行失敗：{' '.join(args)}\n{result.stderr}")

@@ -81,6 +81,7 @@ class VocalRemoveStep(PipelineStep):
              "-o", str(ws / "demucs_out"),
              str(audio_file)],
             capture_output=True, text=True, timeout=600,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr[-300:])

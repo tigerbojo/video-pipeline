@@ -1,15 +1,31 @@
 """AI Video Post-Production Pipeline - Step-based UI."""
 
+import os
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
+# Force UTF-8 for all subprocess calls on Windows
+import subprocess
+_orig_run = subprocess.run
+def _utf8_run(*args, **kwargs):
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+    return _orig_run(*args, **kwargs)
+subprocess.run = _utf8_run
+
 import gradio as gr
 from pathlib import Path
+from datetime import datetime
 from pipeline import run_phase1, run_phase2, create_pipeline
-from pipeline.base import Status
-from pipeline.transcribe import transcribe_video
+from pipeline.base import Status, run_cmd
+from pipeline.transcribe import transcribe_video, polish_transcript, diarize_and_transcribe
 
 WORKSPACE = Path(__file__).parent / "workspace"
 WORKSPACE.mkdir(exist_ok=True)
 
 # ─── Options ──────────────────────────────────────────────
+
+WORK_MODES = ["AI 旁白後製", "原音上字幕"]
 
 VOICE_OPTIONS = {
     "曉臻 (zh-TW, 女聲)": "zh-TW-HsiaoChenNeural",
@@ -38,6 +54,8 @@ LLM_PROVIDERS = {
     "Gemini 雲端（需 API Key）": "gemini",
 }
 
+LANGUAGES = ["zh (中文)", "en (英文)", "ja (日文)", "ko (韓文)"]
+
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 
@@ -58,6 +76,11 @@ def _check_all_deps() -> dict:
     except ImportError:
         checks["demucs"] = (False, "選裝")
     try:
+        import faster_whisper  # noqa: F401
+        checks["Whisper"] = (True, "語音辨識")
+    except ImportError:
+        checks["Whisper"] = (False, "pip install faster-whisper")
+    try:
         import urllib.request, json as _j
         with urllib.request.urlopen(f"{DEFAULT_OLLAMA_URL}/api/tags", timeout=2) as r:
             models = [m["name"] for m in _j.loads(r.read()).get("models", [])]
@@ -77,28 +100,16 @@ def get_tools_html() -> str:
     return html
 
 
-# ─── Pipeline status ─────────────────────────────────────
-
-def make_steps_data() -> list[dict]:
-    return [
-        {"name": s.name, "desc": s.description, "status": "pending", "duration": ""}
-        for s in create_pipeline()
-    ]
-
-
 def get_pipeline_html(steps_data: list[dict]) -> str:
     html = '<div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center; padding:8px 0;">'
     for i, s in enumerate(steps_data):
         st = s.get("status", "pending")
-        colors = {
-            "pending": "#555", "running": "#4da6ff",
-            "done": "#4caf50", "error": "#f44336", "skipped": "#ffc107",
-        }
-        c = colors.get(st, "#555")
+        colors = {"pending": "#555", "running": "#4da6ff", "done": "#4caf50",
+                  "error": "#f44336", "skipped": "#ffc107"}
         icons = {"pending": "○", "running": "►", "done": "●", "error": "✕", "skipped": "◎"}
+        c = colors.get(st, "#555")
         ico = icons.get(st, "○")
         dur = f" ({s['duration']})" if s.get("duration") else ""
-
         html += f'<span style="font-size:12px; color:{c}; white-space:nowrap;">{ico} {s["name"]}{dur}</span>'
         if i < len(steps_data) - 1:
             html += '<span style="color:#444; font-size:10px;">→</span>'
@@ -106,7 +117,19 @@ def get_pipeline_html(steps_data: list[dict]) -> str:
     return html
 
 
-# ─── Phase handlers ───────────────────────────────────────
+def make_steps_data() -> list[dict]:
+    return [{"name": s.name, "desc": s.description, "status": "pending", "duration": ""}
+            for s in create_pipeline()]
+
+
+def make_subtitle_steps() -> list[dict]:
+    return [
+        {"name": "語音辨識", "desc": "Whisper ASR + OpenCC", "status": "pending", "duration": ""},
+        {"name": "燒入字幕", "desc": "FFmpeg 合成", "status": "pending", "duration": ""},
+    ]
+
+
+# ─── AI Narration Mode: Phase handlers ────────────────────
 
 def run_p1(video_file, remove_vocals, narration_mode, narration_text,
            llm_prov_label, ollama_model, ollama_url, llm_api_key, narration_style):
@@ -149,15 +172,10 @@ def run_p1(video_file, remove_vocals, narration_mode, narration_text,
     if has_error:
         log_lines.append("\n[!] Phase 1 有步驟失敗")
     else:
-        log_lines.append("\n--- Phase 1 完成，請到「Step 2」審閱旁白 ---")
+        log_lines.append("\n--- Phase 1 完成，請到 Step 2 審閱旁白 ---")
 
-    return (
-        get_pipeline_html(steps_data),
-        "\n".join(log_lines),
-        ctx.get("narration_text", ""),
-        ctx,
-        steps_data,
-    )
+    return (get_pipeline_html(steps_data), "\n".join(log_lines),
+            ctx.get("narration_text", ""), ctx, steps_data)
 
 
 def run_p2(ctx, edited_narration, tts_engine_label, voice_label, voice_sample,
@@ -194,32 +212,157 @@ def run_p2(ctx, edited_narration, tts_engine_label, voice_label, voice_sample,
 
     final = ctx.get("final_output")
     final_path = str(final) if final and Path(final).exists() else None
-
     done = sum(1 for s in steps_data if s["status"] == "done")
     log_lines.append(f"\n--- 完成：{done}/{len(steps_data)} 步驟 ---")
 
     return get_pipeline_html(steps_data), "\n".join(log_lines), final_path
 
 
-def run_transcribe(video_file, lang_label):
+# ─── Subtitle Mode: Transcribe + Burn ─────────────────────
+
+def run_subtitle_p1(video_file, sub_lang):
+    """Phase 1 for subtitle mode: transcribe original audio."""
     if video_file is None:
-        return "[!] 請先上傳影片", "", gr.update(visible=False), gr.update(visible=False)
+        return get_pipeline_html(make_subtitle_steps()), "[!] 請先上傳影片", "", None, None, None
 
-    lang_code = lang_label.split(" ")[0] if lang_label else "zh"
+    lang_code = sub_lang.split(" ")[0] if sub_lang else "zh"
     logs = []
-    from datetime import datetime
-    ws = str(WORKSPACE / f"tr_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    ws = str(WORKSPACE / f"sub_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
+    steps = make_subtitle_steps()
+    steps[0]["status"] = "running"
+
+    import time
+    t0 = time.time()
     result = transcribe_video(video_path=video_file, workspace=ws,
                               language=lang_code, on_log=lambda m: logs.append(m))
-    log_text = "\n".join(logs)
-    if "error" in result:
-        return f"{log_text}\n[ERROR] {result['error']}", "", \
-               gr.update(visible=False), gr.update(visible=False)
+    dur = time.time() - t0
 
-    return (log_text, result["transcript"],
-            gr.update(value=result["transcript_file"], visible=True),
-            gr.update(value=result["srt_file"], visible=True))
+    if "error" in result:
+        steps[0]["status"] = "error"
+        steps[0]["duration"] = f"{dur:.1f}s"
+        logs.append(f"[ERROR] {result['error']}")
+        return (get_pipeline_html(steps), "\n".join(logs), "", None, None, None)
+
+    steps[0]["status"] = "done"
+    steps[0]["duration"] = f"{dur:.1f}s"
+    logs.append("\n--- 辨識完成，請審閱字幕後點「燒入字幕」 ---")
+
+    # Store context for phase 2
+    sub_ctx = {
+        "source_video": video_file,
+        "srt_file": result["srt_file"],
+        "workspace": ws,
+    }
+
+    return (get_pipeline_html(steps), "\n".join(logs),
+            result["transcript"], sub_ctx, steps,
+            result["srt_file"])
+
+
+def run_polish(transcript, ollama_model, ollama_url):
+    """Send transcript to local LLM for cleanup."""
+    if not transcript.strip():
+        return transcript, "沒有內容可以潤詞"
+    try:
+        cleaned = polish_transcript(
+            transcript,
+            ollama_url=ollama_url or DEFAULT_OLLAMA_URL,
+            ollama_model=ollama_model or "gemma4:26b",
+        )
+        return cleaned, "AI 潤詞完成"
+    except Exception as e:
+        return transcript, f"潤詞失敗：{e}"
+
+
+def run_diarize_p1(video_file, sub_lang, hf_token):
+    """Phase 1 with speaker diarization."""
+    if video_file is None:
+        return get_pipeline_html(make_subtitle_steps()), "[!] 請先上傳影片", "", None, None, None
+
+    lang_code = sub_lang.split(" ")[0] if sub_lang else "zh"
+    logs = []
+    ws = str(WORKSPACE / f"dia_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+
+    steps = make_subtitle_steps()
+    steps[0]["status"] = "running"
+
+    import time
+    t0 = time.time()
+    result = diarize_and_transcribe(
+        video_path=video_file, workspace=ws,
+        language=lang_code, hf_token=hf_token or "",
+        on_log=lambda m: logs.append(m),
+    )
+    dur = time.time() - t0
+
+    if "error" in result:
+        steps[0]["status"] = "error"
+        steps[0]["duration"] = f"{dur:.1f}s"
+        logs.append(f"[ERROR] {result['error']}")
+        return (get_pipeline_html(steps), "\n".join(logs), "", None, None, None)
+
+    steps[0]["status"] = "done"
+    steps[0]["duration"] = f"{dur:.1f}s"
+    speakers = result.get("speakers", [])
+    logs.append(f"\n--- 辨識完成（{', '.join(speakers)}），請審閱後點「燒入字幕」 ---")
+
+    sub_ctx = {
+        "source_video": video_file,
+        "srt_file": result["srt_file"],
+        "workspace": ws,
+    }
+    return (get_pipeline_html(steps), "\n".join(logs),
+            result["transcript"], sub_ctx, steps, result["srt_file"])
+
+
+def run_subtitle_p2(sub_ctx, edited_transcript, prev_steps):
+    """Phase 2 for subtitle mode: burn SRT into video."""
+    if sub_ctx is None:
+        return get_pipeline_html(make_subtitle_steps()), "[!] 請先執行辨識", None, None
+
+    steps = prev_steps if prev_steps else make_subtitle_steps()
+    steps[1]["status"] = "running"
+    logs = []
+
+    import time
+    t0 = time.time()
+
+    src = sub_ctx["source_video"]
+    ws = Path(sub_ctx["workspace"])
+    srt_file = ws / "final_subtitle.srt"
+
+    # Write edited transcript back as SRT (re-use original SRT timing if not edited)
+    orig_srt = sub_ctx.get("srt_file")
+    if orig_srt and Path(orig_srt).exists():
+        # Use original SRT (timing preserved, user may have edited text only)
+        srt_file = Path(orig_srt)
+
+    out = ws / "output_with_subtitles.mp4"
+    sub_path = str(srt_file).replace("\\", "/").replace(":", "\\:")
+
+    logs.append("燒入字幕中...")
+    try:
+        run_cmd([
+            "ffmpeg", "-y", "-i", str(src),
+            "-vf", f"subtitles='{sub_path}'",
+            "-c:a", "copy",
+            str(out)
+        ], timeout=600)
+        steps[1]["status"] = "done"
+        logs.append(f"完成：{out.name}")
+    except Exception as e:
+        steps[1]["status"] = "error"
+        logs.append(f"[ERROR] {e}")
+        out = None
+
+    dur = time.time() - t0
+    steps[1]["duration"] = f"{dur:.1f}s"
+
+    final_path = str(out) if out and out.exists() else None
+    srt_dl = str(srt_file) if srt_file.exists() else None
+
+    return get_pipeline_html(steps), "\n".join(logs), final_path, srt_dl
 
 
 # ─── Gradio UI ────────────────────────────────────────────
@@ -231,108 +374,138 @@ CUSTOM_CSS = """
 
 with gr.Blocks(title="AI 影片自動後製") as app:
 
-    # State
     pipeline_ctx = gr.State(None)
     steps_state = gr.State(None)
+    sub_ctx = gr.State(None)
+    sub_steps_state = gr.State(None)
 
     gr.Markdown("# AI 影片自動後製工作流")
-
-    # Pipeline status bar (always visible)
-    pipeline_bar = gr.HTML(value=get_pipeline_html(make_steps_data()))
     tools_bar = gr.HTML(value=get_tools_html())
 
-    # Shared log (always visible at bottom via render order)
-    with gr.Tabs() as main_tabs:
+    # ═══ Work Mode Selector ═══
+    work_mode = gr.Radio(choices=WORK_MODES, value="AI 旁白後製",
+                         label="工作模式", info="AI 旁白後製 = 全自動剪片配音｜原音上字幕 = 辨識原音燒入字幕")
 
-        # ═══ Tab 1: Upload & Configure ═══
-        with gr.Tab("Step 1: 上傳與設定"):
-            with gr.Row():
-                with gr.Column(scale=1):
-                    video_input = gr.File(label="上傳影片（MP4/MOV/MKV/AVI）", file_types=["video"])
-                    remove_vocals = gr.Checkbox(label="移除人聲（保留環境音）", value=False)
+    # ═══════════════════════════════════════════════════════
+    # MODE A: AI 旁白後製
+    # ═══════════════════════════════════════════════════════
+    with gr.Group(visible=True) as mode_narration:
+        pipeline_bar = gr.HTML(value=get_pipeline_html(make_steps_data()))
 
-                with gr.Column(scale=1):
-                    narration_mode = gr.Radio(
-                        choices=NARRATION_MODES, value="AI 自動生成", label="旁白模式")
+        with gr.Tabs():
+            with gr.Tab("Step 1: 上傳與設定"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        a_video = gr.File(label="上傳影片", file_types=["video"])
+                        a_remove_vocals = gr.Checkbox(label="移除人聲（保留環境音）", value=False)
 
-                    with gr.Group(visible=True) as ai_group:
-                        llm_provider = gr.Dropdown(
-                            choices=list(LLM_PROVIDERS.keys()),
-                            value=list(LLM_PROVIDERS.keys())[0], label="AI 模型")
+                    with gr.Column(scale=1):
+                        narration_mode = gr.Radio(
+                            choices=NARRATION_MODES, value="AI 自動生成", label="旁白模式")
+
+                        with gr.Group(visible=True) as ai_group:
+                            llm_provider = gr.Dropdown(
+                                choices=list(LLM_PROVIDERS.keys()),
+                                value=list(LLM_PROVIDERS.keys())[0], label="AI 模型")
+                            with gr.Row():
+                                ollama_model = gr.Dropdown(
+                                    choices=["gemma4:26b", "gemma4:e4b"],
+                                    value="gemma4:26b", label="模型",
+                                    allow_custom_value=True, scale=1)
+                                ollama_url = gr.Textbox(
+                                    value=DEFAULT_OLLAMA_URL, label="位址", scale=1)
+                            llm_api_key = gr.Textbox(
+                                label="Gemini API Key", type="password", visible=False)
+                            narration_style = gr.Textbox(
+                                label="旁白風格（選填）",
+                                placeholder="Discovery 紀錄片 / 輕鬆 Vlog / 詩意文藝")
+
+                        manual_input = gr.Textbox(
+                            label="旁白文字", lines=4, visible=False,
+                            placeholder="在這裡輸入旁白...")
+
+                a1_btn = gr.Button("生成旁白稿 →", variant="primary", size="lg", elem_classes=["step-btn"])
+                a1_log = gr.Textbox(label="執行紀錄", lines=6, interactive=False, elem_classes=["log-box"])
+
+            with gr.Tab("Step 2: 審閱旁白"):
+                gr.Markdown("**審閱/編輯旁白稿，確認後點「完成製作」**")
+                narration_editor = gr.Textbox(
+                    label="旁白稿（可編輯）", lines=10, interactive=True,
+                    placeholder="Step 1 完成後旁白會出現在這裡...")
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        tts_engine = gr.Dropdown(
+                            choices=list(TTS_ENGINES.keys()),
+                            value=list(TTS_ENGINES.keys())[0], label="語音引擎")
+                        voice_select = gr.Dropdown(
+                            choices=list(VOICE_OPTIONS.keys()),
+                            value=list(VOICE_OPTIONS.keys())[0], label="語音角色")
+                        voice_sample = gr.Audio(
+                            label="聲音樣本（用於聲音複製）",
+                            sources=["microphone", "upload"], type="filepath", visible=False)
+                    with gr.Column(scale=1):
+                        music_engine = gr.Dropdown(
+                            choices=list(MUSIC_ENGINES.keys()),
+                            value=list(MUSIC_ENGINES.keys())[0], label="配樂引擎")
+                        music_prompt = gr.Textbox(label="配樂風格", value="溫柔的戶外自然環境背景音樂")
                         with gr.Row():
-                            ollama_model = gr.Dropdown(
+                            music_duration = gr.Slider(30, 600, 120, step=10, label="配樂秒數")
+                            bgm_volume = gr.Slider(0.0, 1.0, 0.15, step=0.05, label="音量")
+
+                a2_btn = gr.Button("完成製作 →", variant="primary", size="lg", elem_classes=["step-btn"])
+                a2_log = gr.Textbox(label="執行紀錄", lines=6, interactive=False, elem_classes=["log-box"])
+
+            with gr.Tab("Step 3: 輸出"):
+                a_output = gr.Video(label="最終輸出影片")
+
+    # ═══════════════════════════════════════════════════════
+    # MODE B: 原音上字幕
+    # ═══════════════════════════════════════════════════════
+    with gr.Group(visible=False) as mode_subtitle:
+        sub_bar = gr.HTML(value=get_pipeline_html(make_subtitle_steps()))
+
+        with gr.Tabs():
+            with gr.Tab("Step 1: 上傳與辨識"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        b_video = gr.File(label="上傳影片", file_types=["video"])
+                        b_lang = gr.Dropdown(choices=LANGUAGES, value="zh (中文)", label="語言")
+
+                        b_diarize = gr.Checkbox(
+                            label="辨識說話者（SpeechBrain，免 token）", value=False)
+
+                        with gr.Row():
+                            b1_btn = gr.Button("辨識語音 →", variant="primary", size="lg", elem_classes=["step-btn"])
+
+                        b1_log = gr.Textbox(label="辨識紀錄", lines=6, interactive=False, elem_classes=["log-box"])
+
+                    with gr.Column(scale=1):
+                        b_transcript = gr.Textbox(label="逐字稿（可編輯）", lines=12, interactive=True)
+                        with gr.Row():
+                            b_polish_model = gr.Dropdown(
                                 choices=["gemma4:26b", "gemma4:e4b"],
-                                value="gemma4:26b", label="模型",
-                                allow_custom_value=True, scale=1)
-                            ollama_url = gr.Textbox(
-                                value=DEFAULT_OLLAMA_URL, label="位址", scale=1)
-                        llm_api_key = gr.Textbox(
-                            label="Gemini API Key", type="password", visible=False)
-                        narration_style = gr.Textbox(
-                            label="旁白風格（選填）",
-                            placeholder="Discovery 紀錄片 / 輕鬆 Vlog / 詩意文藝")
+                                value="gemma4:26b", label="潤詞模型", scale=1,
+                                allow_custom_value=True)
+                            b_polish_btn = gr.Button("AI 潤詞", variant="secondary", scale=1)
+                        b_polish_log = gr.Textbox(label="", lines=1, interactive=False)
+                        b_dl_srt = gr.File(label="下載 SRT")
 
-                    manual_input = gr.Textbox(
-                        label="旁白文字", lines=4, visible=False,
-                        placeholder="在這裡輸入旁白...")
-
-            p1_btn = gr.Button("生成旁白稿 →", variant="primary", size="lg", elem_classes=["step-btn"])
-            p1_log = gr.Textbox(label="執行紀錄", lines=8, interactive=False, elem_classes=["log-box"])
-
-        # ═══ Tab 2: Review Narration ═══
-        with gr.Tab("Step 2: 審閱旁白"):
-            gr.Markdown("**審閱並編輯 AI 生成的旁白稿，確認後進入下一步。**")
-            narration_editor = gr.Textbox(
-                label="旁白稿（可直接編輯）", lines=12, interactive=True,
-                placeholder="Step 1 完成後旁白內容會出現在這裡...")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    tts_engine = gr.Dropdown(
-                        choices=list(TTS_ENGINES.keys()),
-                        value=list(TTS_ENGINES.keys())[0], label="語音引擎")
-                    voice_select = gr.Dropdown(
-                        choices=list(VOICE_OPTIONS.keys()),
-                        value=list(VOICE_OPTIONS.keys())[0], label="語音角色")
-                    voice_sample = gr.Audio(
-                        label="聲音樣本（錄製或上傳，用於聲音複製）",
-                        sources=["microphone", "upload"], type="filepath", visible=False)
-
-                with gr.Column(scale=1):
-                    music_engine = gr.Dropdown(
-                        choices=list(MUSIC_ENGINES.keys()),
-                        value=list(MUSIC_ENGINES.keys())[0], label="配樂引擎")
-                    music_prompt = gr.Textbox(
-                        label="配樂風格", value="溫柔的戶外自然環境背景音樂")
-                    with gr.Row():
-                        music_duration = gr.Slider(30, 600, 120, step=10, label="配樂秒數")
-                        bgm_volume = gr.Slider(0.0, 1.0, 0.15, step=0.05, label="音量")
-
-            p2_btn = gr.Button("完成製作 →", variant="primary", size="lg", elem_classes=["step-btn"])
-            p2_log = gr.Textbox(label="執行紀錄", lines=8, interactive=False, elem_classes=["log-box"])
-
-        # ═══ Tab 3: Output ═══
-        with gr.Tab("Step 3: 輸出"):
-            output_video = gr.Video(label="最終輸出影片")
-
-        # ═══ Tab 4: Transcription ═══
-        with gr.Tab("逐字稿"):
-            gr.Markdown("上傳訪談/會議影片 → AI 辨識語音 → 帶時間戳逐字稿 + SRT")
-            with gr.Row():
-                with gr.Column(scale=1):
-                    tr_video = gr.File(label="上傳影片", file_types=["video"])
-                    tr_lang = gr.Dropdown(
-                        choices=["zh (中文)", "en (英文)", "ja (日文)", "ko (韓文)"],
-                        value="zh (中文)", label="語言")
-                    tr_btn = gr.Button("開始辨識", variant="primary", size="lg")
-                    tr_log = gr.Textbox(label="辨識紀錄", lines=5, interactive=False)
-                with gr.Column(scale=1):
-                    tr_output = gr.Textbox(label="逐字稿", lines=14, interactive=True)
-                    with gr.Row():
-                        tr_dl_txt = gr.File(label="下載 TXT", visible=False)
-                        tr_dl_srt = gr.File(label="下載 SRT", visible=False)
+            with gr.Tab("Step 2: 燒入字幕"):
+                b2_btn = gr.Button("燒入字幕 →", variant="primary", size="lg", elem_classes=["step-btn"])
+                b2_log = gr.Textbox(label="執行紀錄", lines=6, interactive=False, elem_classes=["log-box"])
+                b_output = gr.Video(label="上字幕後的影片")
 
     # ─── Event wiring ────────────────────────────────────
+
+    # Work mode toggle
+    def toggle_mode(mode):
+        if mode == "AI 旁白後製":
+            return gr.update(visible=True), gr.update(visible=False)
+        else:
+            return gr.update(visible=False), gr.update(visible=True)
+
+    work_mode.change(fn=toggle_mode, inputs=[work_mode],
+                     outputs=[mode_narration, mode_subtitle])
 
     # Narration mode toggle
     def toggle_narr(mode):
@@ -355,33 +528,51 @@ with gr.Blocks(title="AI 影片自動後製") as app:
                         outputs=[ollama_model, ollama_url, llm_api_key])
 
     # Voice sample toggle
-    def toggle_vsample(eng):
-        return gr.update(visible="複製" in eng)
+    tts_engine.change(fn=lambda e: gr.update(visible="複製" in e),
+                      inputs=[tts_engine], outputs=[voice_sample])
 
-    tts_engine.change(fn=toggle_vsample, inputs=[tts_engine], outputs=[voice_sample])
-
-    # Phase 1
-    p1_btn.click(
+    # Mode A: Phase 1
+    a1_btn.click(
         fn=run_p1,
-        inputs=[video_input, remove_vocals, narration_mode, manual_input,
+        inputs=[a_video, a_remove_vocals, narration_mode, manual_input,
                 llm_provider, ollama_model, ollama_url, llm_api_key, narration_style],
-        outputs=[pipeline_bar, p1_log, narration_editor, pipeline_ctx, steps_state],
+        outputs=[pipeline_bar, a1_log, narration_editor, pipeline_ctx, steps_state],
     )
 
-    # Phase 2
-    p2_btn.click(
+    # Mode A: Phase 2
+    a2_btn.click(
         fn=run_p2,
         inputs=[pipeline_ctx, narration_editor, tts_engine, voice_select, voice_sample,
                 music_engine, music_prompt, music_duration, bgm_volume, steps_state],
-        outputs=[pipeline_bar, p2_log, output_video],
+        outputs=[pipeline_bar, a2_log, a_output],
     )
 
-    # Transcription
-    tr_btn.click(
-        fn=run_transcribe,
-        inputs=[tr_video, tr_lang],
-        outputs=[tr_log, tr_output, tr_dl_txt, tr_dl_srt],
+    # Mode B: Phase 1 (transcribe, with optional diarization)
+    def handle_b1(video, lang, do_diarize):
+        if do_diarize:
+            return run_diarize_p1(video, lang, "")
+        return run_subtitle_p1(video, lang)
+
+    b1_btn.click(
+        fn=handle_b1,
+        inputs=[b_video, b_lang, b_diarize],
+        outputs=[sub_bar, b1_log, b_transcript, sub_ctx, sub_steps_state, b_dl_srt],
     )
+
+    # Mode B: AI 潤詞
+    b_polish_btn.click(
+        fn=run_polish,
+        inputs=[b_transcript, b_polish_model, ollama_url],
+        outputs=[b_transcript, b_polish_log],
+    )
+
+    # Mode B: Phase 2 (burn subtitles)
+    b2_btn.click(
+        fn=run_subtitle_p2,
+        inputs=[sub_ctx, b_transcript, sub_steps_state],
+        outputs=[sub_bar, b2_log, b_output, b_dl_srt],
+    )
+
 
 if __name__ == "__main__":
     app.launch(server_name="127.0.0.1", server_port=7860,
