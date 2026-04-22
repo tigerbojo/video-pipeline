@@ -179,7 +179,8 @@ def run_p1(video_file, remove_vocals, narration_mode, narration_text,
 
 
 def run_p2(ctx, edited_narration, tts_engine_label, voice_label, voice_sample,
-           music_engine_label, music_prompt, music_duration, bgm_volume, prev_steps_data):
+           sovits_url, music_engine_label, music_prompt, music_duration, bgm_volume,
+           prev_steps_data):
 
     if ctx is None:
         return get_pipeline_html(make_steps_data()), "[!] 請先執行 Step 1", None
@@ -188,6 +189,7 @@ def run_p2(ctx, edited_narration, tts_engine_label, voice_label, voice_sample,
     ctx["tts_engine"] = TTS_ENGINES.get(tts_engine_label, "edge-tts")
     ctx["tts_voice"] = VOICE_OPTIONS.get(voice_label, "zh-TW-HsiaoChenNeural")
     ctx["voice_sample"] = voice_sample
+    ctx["sovits_url"] = sovits_url or "http://127.0.0.1:9880"
     ctx["music_engine"] = MUSIC_ENGINES.get(music_engine_label, "silence")
     ctx["music_prompt"] = music_prompt or "溫柔的戶外自然環境背景音樂"
     ctx["music_duration"] = int(music_duration)
@@ -441,8 +443,11 @@ with gr.Blocks(title="AI 影片自動後製") as app:
                             choices=list(VOICE_OPTIONS.keys()),
                             value=list(VOICE_OPTIONS.keys())[0], label="語音角色")
                         voice_sample = gr.Audio(
-                            label="聲音樣本（用於聲音複製）",
+                            label="聲音樣本（錄製 10-30 秒，用於聲音複製）",
                             sources=["microphone", "upload"], type="filepath", visible=False)
+                        sovits_url = gr.Textbox(
+                            label="GPT-SoVITS 伺服器位址",
+                            value="http://127.0.0.1:9880", visible=False)
                     with gr.Column(scale=1):
                         music_engine = gr.Dropdown(
                             choices=list(MUSIC_ENGINES.keys()),
@@ -527,9 +532,14 @@ with gr.Blocks(title="AI 影片自動後製") as app:
     llm_provider.change(fn=toggle_llm, inputs=[llm_provider],
                         outputs=[ollama_model, ollama_url, llm_api_key])
 
-    # Voice sample toggle
-    tts_engine.change(fn=lambda e: gr.update(visible="複製" in e),
-                      inputs=[tts_engine], outputs=[voice_sample])
+    # Voice clone toggle (sample + server URL)
+    def toggle_clone(eng):
+        is_sovits = "GPT-SoVITS" in eng
+        is_clone = "複製" in eng
+        return gr.update(visible=is_clone), gr.update(visible=is_sovits)
+
+    tts_engine.change(fn=toggle_clone,
+                      inputs=[tts_engine], outputs=[voice_sample, sovits_url])
 
     # Mode A: Phase 1
     a1_btn.click(
@@ -543,7 +553,7 @@ with gr.Blocks(title="AI 影片自動後製") as app:
     a2_btn.click(
         fn=run_p2,
         inputs=[pipeline_ctx, narration_editor, tts_engine, voice_select, voice_sample,
-                music_engine, music_prompt, music_duration, bgm_volume, steps_state],
+                sovits_url, music_engine, music_prompt, music_duration, bgm_volume, steps_state],
         outputs=[pipeline_bar, a2_log, a_output],
     )
 
