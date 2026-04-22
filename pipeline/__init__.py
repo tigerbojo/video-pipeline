@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from datetime import datetime
+import uuid
 from .base import PipelineStep, Status
 from .vocal_remove import VocalRemoveStep
 from .rough_cut import RoughCutStep
@@ -32,7 +33,7 @@ def _make_ctx(
     music_engine="auto", music_prompt="", music_duration=120,
     bgm_volume=0.15,
 ) -> dict:
-    ws = Path(workspace) / datetime.now().strftime("%Y%m%d_%H%M%S")
+    ws = Path(workspace) / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     ws.mkdir(parents=True, exist_ok=True)
     return {
         "source_video": Path(source_video),
@@ -56,8 +57,6 @@ def _make_ctx(
     }
 
 
-NON_BLOCKING_STEPS = {"vocal_remove", "music"}  # These can fail without stopping pipeline
-
 def _run_steps(step_classes, ctx, on_step_start=None, on_step_done=None, step_offset=0):
     steps = [cls() for cls in step_classes]
     for i, step in enumerate(steps):
@@ -67,7 +66,8 @@ def _run_steps(step_classes, ctx, on_step_start=None, on_step_done=None, step_of
         result = step.execute(ctx)
         if on_step_done:
             on_step_done(idx, step, result)
-        if result.status == Status.ERROR and step.id not in NON_BLOCKING_STEPS:
+        # Only stop pipeline on ERROR from required steps
+        if result.status == Status.ERROR and step.required:
             break
     return steps
 

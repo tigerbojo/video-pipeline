@@ -9,6 +9,7 @@ class MusicStep(PipelineStep):
     name = "5. AI 配樂"
     description = "本地 AI 背景音樂生成"
     icon = "[MUSIC]"
+    required = False
 
     def check_deps(self) -> tuple[bool, str]:
         try:

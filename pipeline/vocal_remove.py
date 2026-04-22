@@ -9,6 +9,7 @@ class VocalRemoveStep(PipelineStep):
     name = "0. 去人聲"
     description = "音軌分離，保留環境音"
     icon = "[VOCAL]"
+    required = False
 
     def check_deps(self) -> tuple[bool, str]:
         if not cmd_exists("ffmpeg"):

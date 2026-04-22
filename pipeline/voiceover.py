@@ -58,7 +58,7 @@ class VoiceoverStep(PipelineStep):
         )
 
     def _run_edge_tts(self, text: str, voice: str, audio_out: Path, srt_out: Path):
-        """Generate audio AND synchronized subtitles using edge-tts WordBoundary."""
+        """Generate audio AND synchronized subtitles using edge-tts."""
         import edge_tts
 
         async def _generate():
@@ -69,14 +69,10 @@ class VoiceoverStep(PipelineStep):
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":
                         audio_file.write(chunk["data"])
-                    elif chunk["type"] == "WordBoundary":
-                        submaker.create_sub(
-                            (chunk["offset"], chunk["duration"]),
-                            chunk["text"],
-                        )
+                    else:
+                        submaker.feed(chunk)
 
-            # Generate SRT from WordBoundary data
-            srt_content = submaker.generate_subs()
+            srt_content = submaker.get_srt()
             if srt_content:
                 srt_out.write_text(srt_content, encoding="utf-8")
 

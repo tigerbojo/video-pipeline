@@ -36,7 +36,12 @@ class NarrationStep(PipelineStep):
         narration_mode: str = ctx.get("narration_mode", "manual")
 
         # Mode 1: User provided script directly
-        if narration_mode == "manual" and user_script.strip():
+        if narration_mode == "manual":
+            if not user_script.strip():
+                return StepResult(
+                    status=Status.ERROR,
+                    message="手動模式但旁白文字為空，請輸入旁白內容或切換為「AI 自動生成」"
+                )
             self.log("使用手動輸入的旁白腳本")
             script_file.write_text(user_script, encoding="utf-8")
             ctx["narration_script_file"] = script_file

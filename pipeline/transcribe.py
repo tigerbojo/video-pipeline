@@ -19,17 +19,25 @@ def transcribe_video(
         if on_log:
             on_log(msg)
 
-    # Step 1: Extract audio
+    # Step 1: Extract full audio
     audio_file = ws / "transcribe_audio.wav"
-    log("擷取音軌中...")
+    log("擷取完整音軌中...")
     if not cmd_exists("ffmpeg"):
         return {"error": "需要安裝 ffmpeg"}
 
-    run_cmd([
-        "ffmpeg", "-y", "-i", str(video),
-        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-        str(audio_file)
-    ])
+    try:
+        run_cmd([
+            "ffmpeg", "-y", "-i", str(video),
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            "-map", "0:a:0",
+            str(audio_file)
+        ], timeout=300)
+    except Exception as e:
+        return {"error": f"音軌擷取失敗：{e}"}
+
+    # Verify audio was extracted
+    if not audio_file.exists() or audio_file.stat().st_size < 1000:
+        return {"error": "影片可能沒有音軌，或音軌擷取失敗"}
 
     # Step 2: Transcribe with faster-whisper or whisper
     transcript_lines = []
@@ -40,14 +48,30 @@ def transcribe_video(
         log("載入 faster-whisper large-v3 模型...")
         model = WhisperModel("large-v3", compute_type="auto")
         log(f"開始辨識（語言：{language}）...")
-        segments, info = model.transcribe(str(audio_file), language=language)
 
-        for i, seg in enumerate(segments, 1):
+        # Consume all segments first (generator is lazy)
+        all_segments = list(model.transcribe(
+            str(audio_file),
+            language=language,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters=dict(
+                min_silence_duration_ms=500,
+                speech_pad_ms=300,
+            ),
+            condition_on_previous_text=True,
+            word_timestamps=False,
+        )[0])
+
+        log(f"辨識中...共偵測到 {len(all_segments)} 段語音")
+
+        for i, seg in enumerate(all_segments, 1):
             start = _fmt(seg.start)
             end = _fmt(seg.end)
             text = seg.text.strip()
-            transcript_lines.append(f"[{start}] {text}")
-            srt_lines.append(f"{i}\n{start} --> {end}\n{text}\n")
+            if text:
+                transcript_lines.append(f"[{start}] {text}")
+                srt_lines.append(f"{i}\n{start} --> {end}\n{text}\n")
 
         log(f"辨識完成：{len(transcript_lines)} 段")
 

@@ -33,6 +33,7 @@ class PipelineStep(ABC):
     name: str = ""
     description: str = ""
     icon: str = ""
+    required: bool = True  # If True, check_deps failure = ERROR not SKIPPED
 
     def __init__(self):
         self.status = Status.PENDING
@@ -49,9 +50,14 @@ class PipelineStep(ABC):
         try:
             ok, reason = self.check_deps()
             if not ok:
-                self.log(f"[略過] {reason}")
-                self.status = Status.SKIPPED
-                self.result = StepResult(status=Status.SKIPPED, message=reason)
+                if self.required:
+                    self.log(f"[錯誤] 必要工具缺失：{reason}")
+                    self.status = Status.ERROR
+                    self.result = StepResult(status=Status.ERROR, message=f"必要工具缺失：{reason}")
+                else:
+                    self.log(f"[略過] {reason}")
+                    self.status = Status.SKIPPED
+                    self.result = StepResult(status=Status.SKIPPED, message=reason)
                 return self.result
 
             self.log(f"[開始] {self.name}")

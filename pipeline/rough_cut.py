@@ -33,16 +33,9 @@ class RoughCutStep(PipelineStep):
             return StepResult(status=Status.DONE, output_files=[out],
                               message="auto-editor：靜音段已移除")
 
-        # Fallback: FFmpeg silence detection + trim
-        self.log("找不到 auto-editor，使用 FFmpeg 備援...")
-        # Detect silence
-        detect = run_cmd([
-            "ffmpeg", "-i", str(src),
-            "-af", "silencedetect=noise=-30dB:d=1.5",
-            "-f", "null", "-"
-        ])
-        # For the fallback, just copy the file (user can install auto-editor later)
-        self.log("FFmpeg 備援：直接複製原始檔（安裝 auto-editor 可啟用真正的靜音移除）")
+        # Fallback: remux to MKV (handles all input containers safely)
+        self.log("找不到 auto-editor，直接 remux 原始檔（安裝 auto-editor 可啟用靜音移除）")
+        out = ws / "01_rough_cut.mkv"
         run_cmd(["ffmpeg", "-y", "-i", str(src), "-c", "copy", str(out)])
 
         ctx["rough_cut"] = out
