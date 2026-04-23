@@ -73,9 +73,14 @@ class VoiceoverStep(PipelineStep):
         from .engines.text_splitter import split_text
         from .engines.audio_utils import concat_audio_files, convert_to_mp3
 
-        # Resolve to absolute path (GPT-SoVITS needs absolute path)
-        ref_audio = str(Path(ref_audio).resolve())
-        self.log(f"聲音樣本路徑：{ref_audio}")
+        # Copy ref audio to workspace with clean ASCII path
+        # (GPT-SoVITS can fail on paths with CJK characters or long temp paths)
+        import shutil
+        ref_src = Path(ref_audio).resolve()
+        ref_copy = ws / "ref_voice.wav"
+        shutil.copy2(ref_src, ref_copy)
+        ref_audio = str(ref_copy)
+        self.log(f"聲音樣本複製至：{ref_audio}")
 
         # Check server
         self.log(f"檢查 GPT-SoVITS 伺服器（{base_url}）...")

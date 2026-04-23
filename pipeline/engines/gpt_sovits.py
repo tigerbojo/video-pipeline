@@ -8,6 +8,7 @@ Start: python api_v2.py (in GPT-SoVITS directory)
 """
 
 import urllib.request
+import urllib.error
 import json
 from pathlib import Path
 
@@ -46,9 +47,13 @@ def synthesize(
         headers={"Content-Type": "application/json"},
     )
 
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GPT-SoVITS {e.code}: {body}")
 
     return output_path
 
