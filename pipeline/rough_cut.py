@@ -1,7 +1,25 @@
 """Step 1: Rough cut - silence removal + scene detection."""
 
+import sys
 from pathlib import Path
 from .base import PipelineStep, StepResult, Status, cmd_exists, run_cmd
+
+
+def _find_auto_editor() -> str | None:
+    """Find auto-editor binary, including Python Scripts dir."""
+    import shutil
+    path = shutil.which("auto-editor")
+    if path:
+        return path
+    # Check Python Scripts directory (Windows)
+    scripts = Path(sys.executable).parent / "Scripts" / "auto-editor.exe"
+    if scripts.exists():
+        return str(scripts)
+    # Check user site-packages Scripts
+    user_scripts = Path.home() / "AppData" / "Roaming" / "Python" / f"Python{sys.version_info.major}{sys.version_info.minor}" / "Scripts" / "auto-editor.exe"
+    if user_scripts.exists():
+        return str(user_scripts)
+    return None
 
 
 class RoughCutStep(PipelineStep):
@@ -21,10 +39,11 @@ class RoughCutStep(PipelineStep):
         out = ws / "01_rough_cut.mp4"
 
         # Try auto-editor first (best quality)
-        if cmd_exists("auto-editor"):
+        ae_path = _find_auto_editor()
+        if ae_path:
             self.log("使用 auto-editor 移除靜音段...")
             run_cmd([
-                "auto-editor", str(src),
+                ae_path, str(src),
                 "--margin", "0.3s",
                 "--output", str(out),
                 "--no-open",
