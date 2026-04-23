@@ -120,8 +120,8 @@ class NarrationStep(PipelineStep):
         ctx["narration_text"] = ""
         return StepResult(status=Status.SKIPPED, message="略過旁白生成")
 
-    def _extract_frames(self, video_path: Path, output_dir: Path, interval: int = 5) -> list[Path]:
-        """Extract one frame every N seconds from video."""
+    def _extract_frames(self, video_path: Path, output_dir: Path) -> list[Path]:
+        """Extract frames at scene changes + fixed intervals as fallback."""
         if not cmd_exists("ffmpeg"):
             raise RuntimeError("需要 ffmpeg 來擷取影格")
 
@@ -134,7 +134,28 @@ class NarrationStep(PipelineStep):
         duration = float(duration_str)
         self.log(f"影片長度：{duration:.0f} 秒")
 
+        # Try scene-change detection first (captures meaningful transitions)
         pattern = str(output_dir / "frame_%04d.jpg")
+        try:
+            run_cmd([
+                "ffmpeg", "-y", "-i", str(video_path),
+                "-vf", "select='gt(scene,0.3)',scale=512:-1",
+                "-vsync", "vfr", "-q:v", "5",
+                "-frames:v", "20",
+                pattern
+            ])
+            frames = sorted(output_dir.glob("frame_*.jpg"))
+            if len(frames) >= 2:
+                self.log(f"場景切換偵測：{len(frames)} 張關鍵幀")
+                return frames
+        except Exception:
+            pass
+
+        # Fallback: fixed interval (every 5 seconds)
+        self.log("場景偵測不足，使用固定間隔取樣")
+        for f in output_dir.glob("frame_*.jpg"):
+            f.unlink()
+        interval = max(1, int(duration / 15))  # aim for ~15 frames
         run_cmd([
             "ffmpeg", "-y", "-i", str(video_path),
             "-vf", f"fps=1/{interval},scale=512:-1",
@@ -143,8 +164,6 @@ class NarrationStep(PipelineStep):
         ])
 
         frames = sorted(output_dir.glob("frame_*.jpg"))
-
-        # Cap frames to avoid overwhelming the model
         max_frames = 20
         if len(frames) > max_frames:
             step = len(frames) // max_frames

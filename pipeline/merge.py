@@ -48,6 +48,8 @@ class MergeStep(PipelineStep):
         amix_labels = []
         idx = 1
 
+        # Dynamic ducking: when voiceover plays, auto-lower original audio and BGM
+        vo_idx = None
         if has_orig_audio:
             audio_filters.append("[0:a]volume=0.3[oa]")
             amix_labels.append("[oa]")
@@ -55,6 +57,7 @@ class MergeStep(PipelineStep):
 
         if has_vo:
             inputs.extend(["-i", str(voiceover)])
+            vo_idx = idx
             audio_filters.append(f"[{idx}:a]volume=1.0[vo]")
             amix_labels.append("[vo]")
             idx += 1
@@ -67,20 +70,44 @@ class MergeStep(PipelineStep):
             idx += 1
             self.log("+ 背景音樂音軌")
 
-        # Build filter_complex
+        # Build filter_complex with sidechained ducking
         filters = []
-        filters.extend(audio_filters)
 
+        if has_vo and (has_orig_audio or has_bgm):
+            # Use sidechaincompress: voiceover ducks the other audio sources
+            self.log("+ 動態 ducking（旁白播放時自動降低背景音量）")
+            duck_targets = []
+            if has_orig_audio:
+                duck_targets.append("[oa]")
+            if has_bgm:
+                duck_targets.append("[bg]")
+
+            # Build: mix bg sources → duck with voiceover → combine with voiceover
+            if len(duck_targets) == 1:
+                bg_label = duck_targets[0]
+                filters.extend(audio_filters)
+                # Sidechain compress: when voiceover is loud, reduce bg
+                filters.append(f"{bg_label}[vo]sidechaincompress=threshold=0.02:ratio=6:attack=200:release=1000[ducked]")
+                filters.append(f"[ducked][vo]amix=inputs=2:duration=longest[aout]")
+            else:
+                # Multiple bg sources: mix them first, then duck
+                filters.extend(audio_filters)
+                bg_labels = "".join(duck_targets)
+                filters.append(f"{bg_labels}amix=inputs={len(duck_targets)}:duration=longest[bgmix]")
+                filters.append(f"[bgmix][vo]sidechaincompress=threshold=0.02:ratio=6:attack=200:release=1000[ducked]")
+                filters.append(f"[ducked][vo]amix=inputs=2:duration=longest[aout]")
+        else:
+            # No ducking needed, simple mix
+            filters.extend(audio_filters)
+            n = len(amix_labels)
+            if n > 1:
+                filters.append(f"{''.join(amix_labels)}amix=inputs={n}:duration=longest[aout]")
+            elif n == 1:
+                filters[-1] = filters[-1].rsplit("[", 1)[0] + "[aout]"
+
+        # Determine audio output label
         n = len(amix_labels)
-        if n > 1:
-            filters.append(f"{''.join(amix_labels)}amix=inputs={n}:duration=longest[aout]")
-            audio_out = "[aout]"
-        elif n == 1:
-            # Rename single audio to [aout]
-            old_label = amix_labels[0]
-            tag = old_label.strip("[]")
-            # Replace last filter's output label
-            filters[-1] = filters[-1].rsplit("[", 1)[0] + "[aout]"
+        if n >= 1:
             audio_out = "[aout]"
         else:
             audio_out = None

@@ -11,6 +11,7 @@ from .voiceover import VoiceoverStep
 from .subtitle import SubtitleStep
 from .music import MusicStep
 from .merge import MergeStep
+from .context import PipelineContext
 
 PHASE1_STEPS = [VocalRemoveStep, RoughCutStep, NarrationStep]
 PHASE2_STEPS = [VoiceoverStep, SubtitleStep, MusicStep, MergeStep]
@@ -21,66 +22,42 @@ def create_pipeline() -> list[PipelineStep]:
     return [cls() for cls in ALL_STEPS]
 
 
-def _make_ctx(
-    source_video, workspace,
-    remove_vocals=False,
-    narration_mode="skip", narration_script="", narration_style="",
-    llm_provider="ollama", llm_api_key="",
-    ollama_url="http://localhost:11434", ollama_model="gemma4:26b",
-    tts_engine="edge-tts", tts_voice="zh-TW-HsiaoChenNeural",
-    voice_sample=None,
-    asr_engine="auto",
-    music_engine="auto", music_prompt="", music_duration=120,
-    bgm_volume=0.15,
-) -> dict:
-    ws = Path(workspace) / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+def make_workspace(base: str) -> Path:
+    ws = Path(base) / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     ws.mkdir(parents=True, exist_ok=True)
-    return {
-        "source_video": Path(source_video),
-        "workspace": ws,
-        "remove_vocals": remove_vocals,
-        "narration_mode": narration_mode,
-        "narration_script": narration_script,
-        "narration_style": narration_style,
-        "llm_provider": llm_provider,
-        "llm_api_key": llm_api_key,
-        "ollama_url": ollama_url,
-        "ollama_model": ollama_model,
-        "tts_engine": tts_engine,
-        "tts_voice": tts_voice,
-        "voice_sample": voice_sample,
-        "asr_engine": asr_engine,
-        "music_engine": music_engine,
-        "music_prompt": music_prompt,
-        "music_duration": music_duration,
-        "bgm_volume": bgm_volume,
-    }
+    return ws
 
 
 def _run_steps(step_classes, ctx, on_step_start=None, on_step_done=None, step_offset=0):
+    # Steps use dict interface for now (backward compat)
+    ctx_dict = ctx if isinstance(ctx, dict) else ctx.to_dict()
     steps = [cls() for cls in step_classes]
     for i, step in enumerate(steps):
         idx = i + step_offset
         if on_step_start:
             on_step_start(idx, step)
-        result = step.execute(ctx)
+        result = step.execute(ctx_dict)
         if on_step_done:
             on_step_done(idx, step, result)
-        # Only stop pipeline on ERROR from required steps
         if result.status == Status.ERROR and step.required:
             break
-    return steps
+    return steps, ctx_dict
 
 
 def run_phase1(on_step_start=None, on_step_done=None, **kwargs):
-    """Phase 1: vocal removal + rough cut + AI narration. Returns ctx for phase 2."""
-    ctx = _make_ctx(**kwargs)
-    steps = _run_steps(PHASE1_STEPS, ctx, on_step_start, on_step_done, step_offset=0)
+    """Phase 1: vocal removal + rough cut + AI narration."""
+    ws = make_workspace(kwargs.pop("workspace", "."))
+    ctx = {
+        "workspace": ws,
+        "source_video": Path(kwargs.pop("source_video")),
+        **kwargs,
+    }
+    steps, ctx = _run_steps(PHASE1_STEPS, ctx, on_step_start, on_step_done, step_offset=0)
     return steps, ctx
 
 
 def run_phase2(ctx, on_step_start=None, on_step_done=None):
-    """Phase 2: voiceover + subtitle + music + merge. Uses ctx from phase 1."""
-    steps = _run_steps(PHASE2_STEPS, ctx, on_step_start, on_step_done,
-                       step_offset=len(PHASE1_STEPS))
+    """Phase 2: voiceover + subtitle + music + merge."""
+    steps, ctx = _run_steps(PHASE2_STEPS, ctx, on_step_start, on_step_done,
+                            step_offset=len(PHASE1_STEPS))
     return steps, ctx
