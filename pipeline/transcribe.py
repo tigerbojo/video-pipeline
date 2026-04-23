@@ -8,6 +8,7 @@ def transcribe_video(
     video_path: str,
     workspace: str,
     language: str = "zh",
+    whisper_model: str = "large-v3",
     on_log=None,
 ) -> dict:
     ws = Path(workspace)
@@ -52,29 +53,27 @@ def transcribe_video(
     except ImportError:
         has_gpu = False
 
-    # Detect GPU: check both PyTorch CUDA and actual CUDA runtime
-    device = "cpu"
-    compute = "int8"
-    model_name = "medium"
+    # Use user-selected model, try GPU first then CPU fallback
+    model_name = whisper_model
+    log(f"載入 Whisper {model_name} 模型...")
+
+    model = None
     if has_gpu:
         try:
-            # Test if CUDA actually works with ctranslate2
-            import ctranslate2
-            if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
-                device = "cuda"
-                compute = "float16"
-                model_name = "large-v3"
-        except Exception:
-            pass
+            model = WhisperModel(model_name, device="cuda", compute_type="float16")
+            log(f"使用 GPU（CUDA, float16）")
+        except Exception as e:
+            log(f"GPU 載入失敗：{e}")
 
-    log(f"載入 Whisper {model_name} 模型（{device.upper()}, {compute}）...")
-
-    try:
-        model = WhisperModel(model_name, device=device, compute_type=compute)
-    except Exception as e:
-        log(f"{model_name} 載入失敗（{e}），嘗試 base 模型 CPU...")
-        model = WhisperModel("base", device="cpu", compute_type="int8")
-        model_name = "base"
+    if model is None:
+        try:
+            model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            log(f"使用 CPU（int8）")
+        except Exception as e:
+            log(f"{model_name} 載入失敗，嘗試 base...")
+            model = WhisperModel("base", device="cpu", compute_type="int8")
+            model_name = "base"
+            log(f"使用 base 模型 CPU")
 
     # Get audio duration
     try:

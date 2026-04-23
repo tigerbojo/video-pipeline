@@ -222,12 +222,14 @@ def run_p2(ctx, edited_narration, tts_engine_label, voice_label, voice_sample,
 
 # ─── Subtitle Mode: Transcribe + Burn ─────────────────────
 
-def run_subtitle_p1(video_file, sub_lang):
+def run_subtitle_p1(video_file, sub_lang, whisper_model_label="large-v3 (最精準)"):
     """Phase 1 for subtitle mode: transcribe original audio."""
     if video_file is None:
         return get_pipeline_html(make_subtitle_steps()), "[!] 請先上傳影片", "", None, None, None
 
     lang_code = sub_lang.split(" ")[0] if sub_lang else "zh"
+    # Parse model name from label
+    whisper_model = whisper_model_label.split(" ")[0] if whisper_model_label else "large-v3"
     logs = []
     ws = str(WORKSPACE / f"sub_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
@@ -237,7 +239,8 @@ def run_subtitle_p1(video_file, sub_lang):
     import time
     t0 = time.time()
     result = transcribe_video(video_path=video_file, workspace=ws,
-                              language=lang_code, on_log=lambda m: logs.append(m))
+                              language=lang_code, whisper_model=whisper_model,
+                              on_log=lambda m: logs.append(m))
     dur = time.time() - t0
 
     if "error" in result:
@@ -474,7 +477,11 @@ with gr.Blocks(title="AI 影片自動後製") as app:
                 with gr.Row():
                     with gr.Column(scale=1):
                         b_video = gr.File(label="上傳影片", file_types=["video"])
-                        b_lang = gr.Dropdown(choices=LANGUAGES, value="zh (中文)", label="語言")
+                        with gr.Row():
+                            b_lang = gr.Dropdown(choices=LANGUAGES, value="zh (中文)", label="語言", scale=1)
+                            b_whisper_model = gr.Dropdown(
+                                choices=["large-v3 (最精準)", "medium (快 5 倍)", "base (最快)"],
+                                value="large-v3 (最精準)", label="Whisper 模型", scale=1)
 
                         b_diarize = gr.Checkbox(
                             label="辨識說話者（SpeechBrain，免 token）", value=False)
@@ -558,14 +565,14 @@ with gr.Blocks(title="AI 影片自動後製") as app:
     )
 
     # Mode B: Phase 1 (transcribe, with optional diarization)
-    def handle_b1(video, lang, do_diarize):
+    def handle_b1(video, lang, whisper_model, do_diarize):
         if do_diarize:
             return run_diarize_p1(video, lang, "")
-        return run_subtitle_p1(video, lang)
+        return run_subtitle_p1(video, lang, whisper_model)
 
     b1_btn.click(
         fn=handle_b1,
-        inputs=[b_video, b_lang, b_diarize],
+        inputs=[b_video, b_lang, b_whisper_model, b_diarize],
         outputs=[sub_bar, b1_log, b_transcript, sub_ctx, sub_steps_state, b_dl_srt],
     )
 
