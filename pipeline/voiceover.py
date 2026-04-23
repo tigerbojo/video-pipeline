@@ -73,14 +73,36 @@ class VoiceoverStep(PipelineStep):
         from .engines.text_splitter import split_text
         from .engines.audio_utils import concat_audio_files, convert_to_mp3
 
-        # Copy ref audio to workspace with clean ASCII path
-        # (GPT-SoVITS can fail on paths with CJK characters or long temp paths)
-        import shutil
+        # Copy and trim ref audio to 3-10s (GPT-SoVITS requirement)
         ref_src = Path(ref_audio).resolve()
         ref_copy = audio_out.parent / "ref_voice.wav"
-        shutil.copy2(ref_src, ref_copy)
+        try:
+            from .base import run_cmd
+            # Get duration
+            dur_str = run_cmd([
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(ref_src)
+            ]).strip()
+            dur = float(dur_str)
+            if dur > 10:
+                self.log(f"聲音樣本 {dur:.1f} 秒，裁切為 10 秒（GPT-SoVITS 限制 3-10 秒）")
+                run_cmd([
+                    "ffmpeg", "-y", "-i", str(ref_src),
+                    "-t", "10", "-acodec", "pcm_s16le", "-ar", "16000",
+                    str(ref_copy)
+                ])
+            elif dur < 3:
+                self.log(f"聲音樣本太短（{dur:.1f} 秒），需要至少 3 秒")
+                return StepResult(status=Status.ERROR, message="聲音樣本太短，需要 3-10 秒")
+            else:
+                import shutil
+                shutil.copy2(ref_src, ref_copy)
+        except Exception:
+            import shutil
+            shutil.copy2(ref_src, ref_copy)
+
         ref_audio = str(ref_copy)
-        self.log(f"聲音樣本複製至：{ref_audio}")
+        self.log(f"聲音樣本：{ref_copy.name}")
 
         # Check server
         self.log(f"檢查 GPT-SoVITS 伺服器（{base_url}）...")
