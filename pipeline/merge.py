@@ -109,6 +109,16 @@ class MergeStep(PipelineStep):
         cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23"])
         if audio_out:
             cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+        # Use original video duration as reference (not BGM or voiceover)
+        try:
+            dur_str = run_cmd([
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(video_src)
+            ]).strip()
+            cmd.extend(["-t", dur_str])
+            self.log(f"輸出時長：{float(dur_str):.1f} 秒（跟隨原始影片）")
+        except Exception:
+            pass
         cmd.extend([str(out)])
 
         self.log(f"FFmpeg 合併：{idx} 個輸入串流")

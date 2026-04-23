@@ -167,9 +167,27 @@ class VoiceoverStep(PipelineStep):
             self.log("拼接音段...")
             concat_audio_files(seg_files, concat_wav)
 
-            # Convert to MP3
+            # Validate output duration — GPT-SoVITS sometimes produces garbage
+            from .engines.audio_utils import get_audio_duration
+            vo_dur = get_audio_duration(concat_wav)
+            expected_min = len(text) * 0.05  # ~50ms per char minimum
+            if vo_dur < 3 or vo_dur < expected_min:
+                self.log(f"GPT-SoVITS 輸出異常短（{vo_dur:.1f}秒 / 預期>{expected_min:.0f}秒）")
+                self.log("預訓練模型品質不足，改用 edge-tts 備援")
+                self.log("（提示：用 GPT-SoVITS WebUI 訓練你的專屬聲音模型可大幅改善）")
+                voice = ctx.get("tts_voice", "zh-TW-HsiaoChenNeural")
+                self._run_edge_tts(text, voice, audio_out, srt_out)
+                ctx["voiceover"] = audio_out
+                if srt_out.exists():
+                    ctx["voiceover_srt"] = srt_out
+                return StepResult(
+                    status=Status.DONE, output_files=[audio_out],
+                    message=f"GPT-SoVITS 品質不足（{vo_dur:.1f}秒），已用 edge-tts 備援",
+                    metadata={"engine": "edge-tts", "fallback": True}
+                )
+
             convert_to_mp3(concat_wav, audio_out)
-            self.log(f"GPT-SoVITS 輸出：{audio_out.name}")
+            self.log(f"GPT-SoVITS 輸出：{audio_out.name}（{vo_dur:.1f}秒）")
         except Exception as e:
             return StepResult(status=Status.ERROR,
                               message=f"音段拼接/轉檔失敗：{e}")
