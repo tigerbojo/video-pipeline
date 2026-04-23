@@ -40,40 +40,19 @@ def transcribe_video(
     file_size_mb = audio_file.stat().st_size / 1024 / 1024
     log(f"音軌大小：{file_size_mb:.1f} MB")
 
-    # Step 2: Transcribe
+    # Step 2: Transcribe (cached model)
     try:
-        from faster_whisper import WhisperModel
+        from .engines.whisper_pool import get_model
     except ImportError:
         return {"error": "需要安裝：pip install faster-whisper"}
 
-    # Use medium model on CPU for speed, large-v3 if GPU available
-    try:
-        import torch
-        has_gpu = torch.cuda.is_available()
-    except ImportError:
-        has_gpu = False
-
-    # Use user-selected model, try GPU first then CPU fallback
     model_name = whisper_model
-    log(f"載入 Whisper {model_name} 模型...")
-
-    model = None
-    if has_gpu:
-        try:
-            model = WhisperModel(model_name, device="cuda", compute_type="float16")
-            log(f"使用 GPU（CUDA, float16）")
-        except Exception as e:
-            log(f"GPU 載入失敗：{e}")
-
-    if model is None:
-        try:
-            model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            log(f"使用 CPU（int8）")
-        except Exception as e:
-            log(f"{model_name} 載入失敗，嘗試 base...")
-            model = WhisperModel("base", device="cpu", compute_type="int8")
-            model_name = "base"
-            log(f"使用 base 模型 CPU")
+    log(f"載入 Whisper {model_name}（快取）...")
+    try:
+        model = get_model(model_name)
+        log(f"模型就緒")
+    except Exception as e:
+        return {"error": f"Whisper 載入失敗：{e}"}
 
     # Get audio duration
     try:
@@ -354,15 +333,10 @@ def diarize_and_transcribe(
         })
     log(f"偵測到 {len(set(s['speaker'] for s in speaker_segments))} 位說話者")
 
-    # Step 2: Whisper transcription
-    from faster_whisper import WhisperModel
-    try:
-        model = WhisperModel("large-v3", device="cuda", compute_type="float16")
-        model_name = "large-v3"
-    except Exception:
-        model = WhisperModel("medium", device="cpu", compute_type="int8")
-        model_name = "medium"
-    log(f"載入 Whisper {model_name}...")
+    # Step 2: Whisper transcription (cached)
+    from .engines.whisper_pool import get_model as get_whisper
+    model = get_whisper("large-v3")
+    log("Whisper 模型就緒（快取）")
 
     log("語音辨識中...")
     segments_gen, _ = model.transcribe(

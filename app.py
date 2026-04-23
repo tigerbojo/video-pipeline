@@ -37,9 +37,7 @@ VOICE_OPTIONS = {
 
 TTS_ENGINES = {
     "edge-tts (免費，不需 GPU)": "edge-tts",
-    "Fish-Speech S2 (聲音複製)": "fish-speech",
     "GPT-SoVITS (聲音複製)": "gpt-sovits",
-    "CosyVoice (聲音複製)": "cosyvoice",
 }
 
 MUSIC_ENGINES = {
@@ -335,13 +333,41 @@ def run_subtitle_p2(sub_ctx, edited_transcript, prev_steps):
 
     src = sub_ctx["source_video"]
     ws = Path(sub_ctx["workspace"])
+
+    # Rebuild SRT from edited transcript (preserves timestamps, updates text)
+    orig_srt = sub_ctx.get("srt_file")
     srt_file = ws / "final_subtitle.srt"
 
-    # Write edited transcript back as SRT (re-use original SRT timing if not edited)
-    orig_srt = sub_ctx.get("srt_file")
-    if orig_srt and Path(orig_srt).exists():
-        # Use original SRT (timing preserved, user may have edited text only)
-        srt_file = Path(orig_srt)
+    if orig_srt and Path(orig_srt).exists() and edited_transcript.strip():
+        import re
+        orig_lines = Path(orig_srt).read_text(encoding="utf-8")
+        edited_lines = [l.strip() for l in edited_transcript.strip().split("\n") if l.strip()]
+
+        # Parse original SRT blocks (keep timestamps, replace text)
+        blocks = re.split(r'\n\n+', orig_lines.strip())
+        new_srt = []
+        for i, block in enumerate(blocks):
+            parts = block.strip().split("\n")
+            if len(parts) >= 3:
+                idx = parts[0]
+                timestamp = parts[1]
+                # Use edited text if available, else keep original
+                if i < len(edited_lines):
+                    # Extract text after timestamp prefix [HH:MM:SS,mmm]
+                    edited = edited_lines[i]
+                    edited = re.sub(r'^\[[\d:,]+\]\s*', '', edited)
+                    new_srt.append(f"{idx}\n{timestamp}\n{edited}")
+                else:
+                    new_srt.append(block)
+
+        srt_file.write_text("\n\n".join(new_srt) + "\n", encoding="utf-8")
+        logs.append(f"已套用編輯後的字幕（{len(new_srt)} 段）")
+    elif orig_srt and Path(orig_srt).exists():
+        import shutil
+        shutil.copy2(orig_srt, srt_file)
+    else:
+        logs.append("[!] 找不到 SRT 檔案")
+        return get_pipeline_html(make_subtitle_steps()), "\n".join(logs), None, None
 
     out = ws / "output_with_subtitles.mp4"
     sub_path = str(srt_file).replace("\\", "/").replace(":", "\\:")

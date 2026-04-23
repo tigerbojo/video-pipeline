@@ -123,12 +123,9 @@ class VoiceoverStep(PipelineStep):
         # Auto-transcribe reference audio for prompt_text (critical for quality)
         ref_text = ""
         try:
-            from faster_whisper import WhisperModel
+            from .engines.whisper_pool import get_model
             self.log("辨識聲音樣本內容（作為 prompt_text）...")
-            try:
-                wm = WhisperModel("medium", device="cuda", compute_type="float16")
-            except Exception:
-                wm = WhisperModel("base", device="cpu", compute_type="int8")
+            wm = get_model("medium")
             segs, _ = wm.transcribe(ref_audio, language="zh")
             ref_text = "".join(s.text for s in segs).strip()
             if ref_text:
