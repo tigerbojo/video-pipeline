@@ -45,13 +45,28 @@ class BatchQueue:
             try:
                 data = json.loads(self.queue_file.read_text(encoding="utf-8"))
                 self.jobs = [Job(**j) for j in data]
+                # Rebuild cancelled set from persisted state
+                self._cancelled = {j.id for j in self.jobs if j.status == JobStatus.CANCELLED}
             except Exception:
+                # Corrupt file — try backup
+                bak = self.queue_file.with_suffix(".bak")
+                if bak.exists():
+                    try:
+                        data = json.loads(bak.read_text(encoding="utf-8"))
+                        self.jobs = [Job(**j) for j in data]
+                        self._cancelled = {j.id for j in self.jobs if j.status == JobStatus.CANCELLED}
+                        return
+                    except Exception:
+                        pass
                 self.jobs = []
 
     def _save(self):
         self.queue_file.parent.mkdir(parents=True, exist_ok=True)
         data = [asdict(j) for j in self.jobs]
-        self.queue_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Atomic write: write to temp then rename (prevents corruption)
+        tmp = self.queue_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.queue_file)
 
     def add(self, video_path: str, mode: str = "narration", settings: dict = None) -> Job:
         job = Job(

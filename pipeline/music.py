@@ -33,7 +33,7 @@ class MusicStep(PipelineStep):
                 "ffprobe", "-v", "error", "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", str(video_src)
             ]).strip()
-            duration = int(float(dur_str)) + 5  # pad 5 seconds
+            duration = min(int(float(dur_str)) + 5, 300)  # pad 5s, cap at 300s
         except Exception:
             duration = ctx.get("music_duration", 120)
 

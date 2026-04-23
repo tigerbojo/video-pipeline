@@ -21,13 +21,33 @@ ACE_STEP_DIRS = [
     Path.home() / "ace-step",
 ]
 
+# ACE-Step entry points to try (varies by version)
+ENTRY_POINTS = [
+    "acestep/acestep_v15_pipeline.py",
+    "infer.py",
+    "generate.py",
+]
+
+MAX_DURATION = 300  # ACE-Step practical limit
+
 
 def find_ace_step() -> Path | None:
     """Find ACE-Step installation directory."""
     for d in ACE_STEP_DIRS:
-        if d.exists() and (d / "infer.py").exists():
-            return d
+        if not d.exists():
+            continue
+        for entry in ENTRY_POINTS:
+            if (d / entry).exists():
+                return d
     return None
+
+
+def _find_entry(ace_dir: Path) -> str:
+    """Find the correct entry point script."""
+    for entry in ENTRY_POINTS:
+        if (ace_dir / entry).exists():
+            return entry
+    raise FileNotFoundError(f"找不到 ACE-Step 入口腳本：{ENTRY_POINTS}")
 
 
 def generate_music(
@@ -47,17 +67,19 @@ def generate_music(
             "  cd ACE-Step-1.5 && pip install -r requirements.txt"
         )
 
+    # Cap duration to avoid OOM
+    duration = min(duration, MAX_DURATION)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = _find_entry(ace_dir)
 
-    # ACE-Step infer.py generates audio from text prompt
     result = subprocess.run(
         [
-            "python", str(ace_dir / "infer.py"),
+            "python", str(ace_dir / entry),
             "--prompt", prompt,
             "--output", str(output_path),
             "--duration", str(duration),
         ],
-        capture_output=True, text=True, timeout=300,
+        capture_output=True, text=True, timeout=600,
         cwd=str(ace_dir),
         encoding="utf-8", errors="replace",
     )

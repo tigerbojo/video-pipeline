@@ -70,6 +70,17 @@ def run_phase1(on_step_start=None, on_step_done=None, **kwargs):
 
     steps, ctx = _run_steps(PHASE1_STEPS, ctx, on_step_start, _tracking_done, step_offset=0)
     ctx["_tracker"] = tracker
+
+    # Save partial metadata if Phase 1 fails (Phase 2 may never run)
+    has_error = any(s.result and s.result.status == Status.ERROR and s.required
+                    for s in [cls() for cls in PHASE1_STEPS]
+                    if hasattr(s, 'result'))
+    # Actually check the real steps
+    for s in steps:
+        if s.result and s.result.status == Status.ERROR and s.required:
+            tracker.finish(success=False, error="Phase 1 failed")
+            break
+
     return steps, ctx
 
 
