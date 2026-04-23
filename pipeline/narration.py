@@ -94,7 +94,11 @@ class NarrationStep(PipelineStep):
             if llm_provider == "ollama":
                 ollama_url = ctx.get("ollama_url", "http://localhost:11434")
                 ollama_model = ctx.get("ollama_model", "gemma4:26b")
-                script = self._generate_with_ollama(frames, prompt, ollama_url, ollama_model)
+                # Vision tasks: prefer e4b (lighter, vision-stable on 24GB VRAM)
+                # 26b may fail on vision due to VRAM limits
+                vision_model = "gemma4:e4b"
+                self.log(f"Vision 使用 {vision_model}（{ollama_model} VRAM 不足以處理圖片）")
+                script = self._generate_with_ollama(frames, prompt, ollama_url, vision_model)
             elif llm_provider == "gemini":
                 api_key = ctx.get("llm_api_key", "")
                 if not api_key:
@@ -116,7 +120,7 @@ class NarrationStep(PipelineStep):
         ctx["narration_text"] = ""
         return StepResult(status=Status.SKIPPED, message="略過旁白生成")
 
-    def _extract_frames(self, video_path: Path, output_dir: Path, interval: int = 10) -> list[Path]:
+    def _extract_frames(self, video_path: Path, output_dir: Path, interval: int = 5) -> list[Path]:
         """Extract one frame every N seconds from video."""
         if not cmd_exists("ffmpeg"):
             raise RuntimeError("需要 ffmpeg 來擷取影格")
@@ -133,8 +137,8 @@ class NarrationStep(PipelineStep):
         pattern = str(output_dir / "frame_%04d.jpg")
         run_cmd([
             "ffmpeg", "-y", "-i", str(video_path),
-            "-vf", f"fps=1/{interval},scale=1280:-1",
-            "-q:v", "3",
+            "-vf", f"fps=1/{interval},scale=512:-1",
+            "-q:v", "5",
             pattern
         ])
 
