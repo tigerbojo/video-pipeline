@@ -33,10 +33,11 @@ class VoiceoverStep(PipelineStep):
             ctx["voiceover"] = None
             return StepResult(status=Status.SKIPPED, message="無旁白文字")
 
-        # Validate voice sample path
+        # Validate voice sample path (handle both str and Path)
         if ref_audio:
-            ref_path = Path(ref_audio) if isinstance(ref_audio, str) else None
-            if ref_path and ref_path.exists() and ref_path.stat().st_size > 1000:
+            ref_audio = str(ref_audio)  # normalize Path to str
+            ref_path = Path(ref_audio)
+            if ref_path.exists() and ref_path.stat().st_size > 1000:
                 self.log(f"聲音樣本：{ref_path.name} ({ref_path.stat().st_size // 1024} KB)")
             else:
                 self.log(f"聲音樣本無效或太小，改用 edge-tts")
@@ -130,9 +131,14 @@ class VoiceoverStep(PipelineStep):
                 wm = WhisperModel("base", device="cpu", compute_type="int8")
             segs, _ = wm.transcribe(ref_audio, language="zh")
             ref_text = "".join(s.text for s in segs).strip()
-            self.log(f"prompt_text：{ref_text[:50]}...")
+            if ref_text:
+                self.log(f"prompt_text：{ref_text[:60]}")
+            else:
+                self.log("警告：聲音樣本辨識為空，voice clone 品質可能不佳")
+                self.log("建議：錄音時請清楚說一段話（非靜音或背景噪音）")
         except Exception as e:
-            self.log(f"prompt_text 辨識失敗（不影響合成）：{e}")
+            self.log(f"prompt_text 辨識失敗：{e}")
+            self.log("警告：沒有 prompt_text，GPT-SoVITS 品質可能不穩定")
 
         # Split text into segments
         segments = split_text(text, max_length=300)

@@ -6,18 +6,24 @@ from pathlib import Path
 from .base import PipelineStep, StepResult, Status, cmd_exists, run_cmd
 
 
-NARRATION_PROMPT = (
-    "你是一位專業的戶外探險影片旁白撰稿人。\n"
-    "以下是一段戶外影片的關鍵幀截圖（按時間順序排列）。\n"
-    "請根據這些畫面，用繁體中文撰寫一段自然、流暢的旁白腳本。\n\n"
-    "要求：\n"
-    "- 用第一人稱（我）敘述\n"
-    "- 描述眼前看到的景色、感受、氛圍\n"
-    "- 語氣溫暖自然，像在跟朋友分享旅途\n"
-    "- 適當加入地理、生態、文化相關的小知識\n"
-    "- 長度約 200-400 字（適合 1-3 分鐘影片配音）\n"
-    "- 只輸出旁白文字，不要加標記或時間戳\n"
-)
+def _build_narration_prompt(duration_sec: float) -> str:
+    """Build narration prompt with character count matching video duration.
+    Chinese speech rate: ~3.5 chars/sec."""
+    chars = max(15, int(duration_sec * 3.5))
+    char_range = f"{int(chars * 0.8)}-{int(chars * 1.1)}"
+
+    return (
+        "你是一位專業的戶外探險影片旁白撰稿人。\n"
+        "以下是一段戶外影片的關鍵幀截圖（按時間順序排列）。\n"
+        "請根據這些畫面，用繁體中文撰寫一段自然、流暢的旁白腳本。\n\n"
+        "要求：\n"
+        "- 用第一人稱（我）敘述\n"
+        "- 描述眼前看到的景色、感受、氛圍\n"
+        "- 語氣溫暖自然，像在跟朋友分享旅途\n"
+        "- 適當加入地理、生態、文化相關的小知識\n"
+        f"- 影片長度 {duration_sec:.0f} 秒，旁白長度必須控制在 {char_range} 字（中文語速約每秒 3.5 字）\n"
+        "- 只輸出旁白文字，不要加標記或時間戳\n"
+    )
 
 
 class NarrationStep(PipelineStep):
@@ -57,14 +63,30 @@ class NarrationStep(PipelineStep):
             style = ctx.get("narration_style", "")
             llm_provider = ctx.get("llm_provider", "ollama")
 
+            # Get video duration for narration length calculation
+            video_duration = 60.0  # default
+            try:
+                dur_str = run_cmd([
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    str(video_path)
+                ]).strip()
+                video_duration = float(dur_str)
+                self.log(f"影片長度：{video_duration:.0f} 秒")
+            except Exception:
+                pass
+
             # Extract key frames
             frames_dir = ws / "frames"
             frames_dir.mkdir(exist_ok=True)
             frames = self._extract_frames(video_path, frames_dir)
             self.log(f"已擷取 {len(frames)} 張關鍵幀")
 
-            # Build prompt with style
-            prompt = NARRATION_PROMPT
+            # Build prompt with duration-matched char count
+            target_chars = int(video_duration * 3.5)
+            self.log(f"目標旁白：~{target_chars} 字（{video_duration:.0f}秒 × 3.5字/秒）")
+            prompt = _build_narration_prompt(video_duration)
             if style.strip():
                 prompt += f"\n旁白風格要求：{style}"
 
