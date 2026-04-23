@@ -12,53 +12,67 @@ class MusicStep(PipelineStep):
     required = False
 
     def check_deps(self) -> tuple[bool, str]:
-        try:
-            import torch  # noqa: F401
-            return True, "PyTorch 可用（ACE-Step 就緒）"
-        except ImportError:
-            pass
+        from .engines.ace_step import is_available
+        if is_available():
+            return True, "ACE-Step 1.5 就緒"
         if cmd_exists("ffmpeg"):
-            return True, "ffmpeg 就緒（將產生靜音佔位）"
-        return False, "無可用的配樂生成工具"
+            return True, "ffmpeg 就緒（ACE-Step 未安裝，靜音佔位）"
+        return False, "無可用的配樂工具"
 
     def run(self, ctx: dict) -> StepResult:
         ws: Path = ctx["workspace"]
         out = ws / "05_bgm.mp3"
-        engine = ctx.get("music_engine", "auto")
-        prompt = ctx.get("music_prompt", "gentle ambient outdoor nature background music")
-        duration = ctx.get("music_duration", 120)
+        engine = ctx.get("music_engine", "silence")
+        prompt = ctx.get("music_prompt", "溫柔的戶外自然環境背景音樂")
 
-        # Try ACE-Step
-        if engine in ("auto", "ace-step"):
+        # Match music duration to video duration
+        video_src = ctx.get("rough_cut") or ctx.get("source_video")
+        try:
+            from .base import run_cmd
+            dur_str = run_cmd([
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(video_src)
+            ]).strip()
+            duration = int(float(dur_str)) + 5  # pad 5 seconds
+        except Exception:
+            duration = ctx.get("music_duration", 120)
+
+        # ACE-Step
+        if engine == "ace-step":
             try:
-                return self._run_ace_step(prompt, duration, out, ctx)
+                from .engines.ace_step import generate_music, find_ace_step
+                ace_dir = find_ace_step()
+                if not ace_dir:
+                    self.log("ACE-Step 未安裝，產生靜音佔位")
+                    self._generate_silence(out, duration)
+                else:
+                    self.log(f"ACE-Step 生成配樂：「{prompt}」（{duration}秒）...")
+                    generate_music(prompt, out, duration, ace_dir)
+                    self.log(f"AI 配樂完成：{out.name}")
+                    ctx["bgm"] = out
+                    return StepResult(
+                        status=Status.DONE, output_files=[out],
+                        message=f"AI 配樂完成（ACE-Step，{duration}秒）",
+                        metadata={"engine": "ace-step"}
+                    )
             except Exception as e:
-                self.log(f"ACE-Step 失敗：{e}，切換備援...")
+                self.log(f"ACE-Step 失敗：{e}")
 
-        # Fallback: generate silent audio as placeholder
-        self.log("產生靜音佔位背景音樂（安裝 ACE-Step 可啟用 AI 配樂）")
+        # Fallback: silence
+        self.log(f"靜音佔位（{duration}秒）")
         self._generate_silence(out, duration)
         ctx["bgm"] = out
         return StepResult(
             status=Status.DONE, output_files=[out],
-            message=f"靜音佔位（{duration}秒）。安裝 ACE-Step 以啟用 AI 配樂。",
+            message=f"靜音佔位（{duration}秒）",
             metadata={"fallback": True, "engine": "silence"}
         )
 
-    def _run_ace_step(self, prompt: str, duration: int, output: Path, ctx: dict) -> StepResult:
-        self.log(f"ACE-Step：生成「{prompt}」（{duration}秒）...")
-        raise NotImplementedError(
-            "ACE-Step 尚未整合。"
-            "安裝方式：git clone https://github.com/ace-step/ACE-Step-1.5"
-        )
-
     def _generate_silence(self, output: Path, duration: int):
-        """Generate silent audio file as placeholder."""
         from .base import run_cmd
         run_cmd([
             "ffmpeg", "-y",
-            "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
-            "-t", str(duration),
-            "-q:a", "9",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-t", str(duration), "-q:a", "9",
             str(output)
         ])

@@ -52,12 +52,51 @@ def run_phase1(on_step_start=None, on_step_done=None, **kwargs):
         "source_video": Path(kwargs.pop("source_video")),
         **kwargs,
     }
-    steps, ctx = _run_steps(PHASE1_STEPS, ctx, on_step_start, on_step_done, step_offset=0)
+
+    # Start run tracker
+    from .run_metadata import RunTracker
+    tracker = RunTracker(ws, mode=kwargs.get("narration_mode", "narration"))
+    tracker.meta.source_video = str(ctx["source_video"])
+
+    # Wrap on_step_done to also record metadata
+    orig_done = on_step_done
+    def _tracking_done(i, step, result):
+        tracker.record_step(
+            step.name, result.status.value, result.duration,
+            result.message, [str(f) for f in result.output_files],
+        )
+        if orig_done:
+            orig_done(i, step, result)
+
+    steps, ctx = _run_steps(PHASE1_STEPS, ctx, on_step_start, _tracking_done, step_offset=0)
+    ctx["_tracker"] = tracker
     return steps, ctx
 
 
 def run_phase2(ctx, on_step_start=None, on_step_done=None):
     """Phase 2: voiceover + subtitle + music + merge."""
-    steps, ctx = _run_steps(PHASE2_STEPS, ctx, on_step_start, on_step_done,
+    tracker = ctx.get("_tracker")
+
+    orig_done = on_step_done
+    def _tracking_done(i, step, result):
+        if tracker:
+            tracker.record_step(
+                step.name, result.status.value, result.duration,
+                result.message, [str(f) for f in result.output_files],
+            )
+        if orig_done:
+            orig_done(i, step, result)
+
+    steps, ctx = _run_steps(PHASE2_STEPS, ctx, on_step_start, _tracking_done,
                             step_offset=len(PHASE1_STEPS))
+
+    # Finalize metadata
+    if tracker:
+        final = ctx.get("final_output")
+        has_error = any(s.result and s.result.status == Status.ERROR for s in steps if s.required)
+        tracker.finish(
+            success=not has_error,
+            output_video=str(final) if final else "",
+        )
+
     return steps, ctx
