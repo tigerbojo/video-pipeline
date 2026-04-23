@@ -119,6 +119,21 @@ class VoiceoverStep(PipelineStep):
                 metadata={"engine": "edge-tts", "fallback": True}
             )
 
+        # Auto-transcribe reference audio for prompt_text (critical for quality)
+        ref_text = ""
+        try:
+            from faster_whisper import WhisperModel
+            self.log("辨識聲音樣本內容（作為 prompt_text）...")
+            try:
+                wm = WhisperModel("medium", device="cuda", compute_type="float16")
+            except Exception:
+                wm = WhisperModel("base", device="cpu", compute_type="int8")
+            segs, _ = wm.transcribe(ref_audio, language="zh")
+            ref_text = "".join(s.text for s in segs).strip()
+            self.log(f"prompt_text：{ref_text[:50]}...")
+        except Exception as e:
+            self.log(f"prompt_text 辨識失敗（不影響合成）：{e}")
+
         # Split text into segments
         segments = split_text(text, max_length=300)
         self.log(f"GPT-SoVITS 聲音複製：{len(segments)} 段文字")
@@ -135,6 +150,7 @@ class VoiceoverStep(PipelineStep):
                     output_path=seg_out,
                     speaker_wav=ref_audio,
                     base_url=base_url,
+                    ref_text=ref_text,
                 )
                 seg_files.append(seg_out)
             except Exception as e:

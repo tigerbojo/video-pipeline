@@ -109,7 +109,7 @@ class MergeStep(PipelineStep):
         cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23"])
         if audio_out:
             cmd.extend(["-c:a", "aac", "-b:a", "192k"])
-        cmd.extend(["-shortest", str(out)])
+        cmd.extend([str(out)])
 
         self.log(f"FFmpeg 合併：{idx} 個輸入串流")
         run_cmd(cmd, timeout=1200)
