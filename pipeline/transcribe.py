@@ -52,15 +52,28 @@ def transcribe_video(
     except ImportError:
         has_gpu = False
 
-    model_name = "large-v3" if has_gpu else "medium"
-    compute = "float16" if has_gpu else "int8"
-    log(f"載入 Whisper {model_name} 模型（{'GPU' if has_gpu else 'CPU'}, {compute}）...")
+    # Detect GPU: check both PyTorch CUDA and actual CUDA runtime
+    device = "cpu"
+    compute = "int8"
+    model_name = "medium"
+    if has_gpu:
+        try:
+            # Test if CUDA actually works with ctranslate2
+            import ctranslate2
+            if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+                device = "cuda"
+                compute = "float16"
+                model_name = "large-v3"
+        except Exception:
+            pass
+
+    log(f"載入 Whisper {model_name} 模型（{device.upper()}, {compute}）...")
 
     try:
-        model = WhisperModel(model_name, compute_type=compute)
+        model = WhisperModel(model_name, device=device, compute_type=compute)
     except Exception as e:
-        log(f"{model_name} 載入失敗，嘗試 base 模型...")
-        model = WhisperModel("base", compute_type="int8")
+        log(f"{model_name} 載入失敗（{e}），嘗試 base 模型 CPU...")
+        model = WhisperModel("base", device="cpu", compute_type="int8")
         model_name = "base"
 
     # Get audio duration
@@ -345,15 +358,12 @@ def diarize_and_transcribe(
     # Step 2: Whisper transcription
     from faster_whisper import WhisperModel
     try:
-        import torch
-        has_gpu = torch.cuda.is_available()
-    except ImportError:
-        has_gpu = False
-
-    model_name = "large-v3" if has_gpu else "medium"
-    compute = "float16" if has_gpu else "int8"
+        model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+        model_name = "large-v3"
+    except Exception:
+        model = WhisperModel("medium", device="cpu", compute_type="int8")
+        model_name = "medium"
     log(f"載入 Whisper {model_name}...")
-    model = WhisperModel(model_name, compute_type=compute)
 
     log("語音辨識中...")
     segments_gen, _ = model.transcribe(

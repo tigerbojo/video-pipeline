@@ -99,7 +99,10 @@ class SubtitleStep(PipelineStep):
 
     def _run_faster_whisper(self, audio_path: Path, srt_out: Path):
         from faster_whisper import WhisperModel
-        model = WhisperModel("large-v3", compute_type="auto")
+        try:
+            model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+        except Exception:
+            model = WhisperModel("medium", device="cpu", compute_type="int8")
         segments, _ = model.transcribe(str(audio_path), language="zh")
         lines = []
         for i, seg in enumerate(segments, 1):

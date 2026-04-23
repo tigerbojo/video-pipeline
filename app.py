@@ -586,5 +586,6 @@ with gr.Blocks(title="AI 影片自動後製") as app:
 
 if __name__ == "__main__":
     app.launch(server_name="127.0.0.1", server_port=7860,
+               max_file_size="5gb",
                theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate"),
                css=CUSTOM_CSS)
