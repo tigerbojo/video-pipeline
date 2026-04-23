@@ -12,11 +12,26 @@ class VoiceoverStep(PipelineStep):
     icon = "[VOICE]"
 
     def check_deps(self) -> tuple[bool, str]:
+        has_edge = False
         try:
             import edge_tts  # noqa: F401
-            return True, "edge-tts 就緒"
+            has_edge = True
         except ImportError:
-            return False, "pip install edge-tts"
+            pass
+        has_sovits = False
+        try:
+            from .engines.gpt_sovits import health_check
+            has_sovits = health_check()
+        except Exception:
+            pass
+        if has_edge or has_sovits:
+            parts = []
+            if has_edge:
+                parts.append("edge-tts")
+            if has_sovits:
+                parts.append("GPT-SoVITS")
+            return True, " + ".join(parts)
+        return False, "需要 edge-tts 或 GPT-SoVITS"
 
     def run(self, ctx: dict) -> StepResult:
         ws: Path = ctx["workspace"]
@@ -100,9 +115,18 @@ class VoiceoverStep(PipelineStep):
                 "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 str(ref_copy)
             ])
-        except Exception:
-            import shutil
-            shutil.copy2(ref_src, ref_copy)
+        except Exception as e:
+            # Fallback: convert to WAV properly (don't just copy non-WAV as .wav)
+            self.log(f"前處理失敗（{e}），嘗試基本轉換...")
+            try:
+                run_cmd([
+                    "ffmpeg", "-y", "-i", str(ref_src),
+                    "-t", "10", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    str(ref_copy)
+                ])
+            except Exception:
+                import shutil
+                shutil.copy2(ref_src, ref_copy)
 
         ref_audio = str(ref_copy)
         self.log(f"聲音樣本：{ref_copy.name}")

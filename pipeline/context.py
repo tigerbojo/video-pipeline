@@ -1,4 +1,8 @@
-"""Typed pipeline context — replaces untyped ctx dict."""
+"""Typed pipeline context — future replacement for untyped ctx dict.
+
+NOTE: Steps currently still use dict interface via ctx.to_dict().
+This dataclass defines the contract; migration to direct attribute
+access will happen incrementally as steps are updated."""
 
 from dataclasses import dataclass, field
 from pathlib import Path
