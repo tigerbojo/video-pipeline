@@ -77,7 +77,7 @@ class VoiceoverStep(PipelineStep):
         # (GPT-SoVITS can fail on paths with CJK characters or long temp paths)
         import shutil
         ref_src = Path(ref_audio).resolve()
-        ref_copy = ws / "ref_voice.wav"
+        ref_copy = audio_out.parent / "ref_voice.wav"
         shutil.copy2(ref_src, ref_copy)
         ref_audio = str(ref_copy)
         self.log(f"聲音樣本複製至：{ref_audio}")
