@@ -9,7 +9,7 @@ echo   啟動中...
 echo  ========================================
 echo.
 
-cd /d "H:\dev\drnogreasy\video-pipeline"
+cd /d "H:\dev\side-projects\video-pipeline"
 
 :: 用完整路徑啟動 Python
 start "" /b C:\Python313\python.exe app.py
